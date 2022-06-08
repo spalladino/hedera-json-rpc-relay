@@ -27,9 +27,11 @@ import {
     AccountId,
     AccountBalanceQuery,
     AccountInfoQuery,
+    ContractCreateFlow,
     ContractCreateTransaction,
     ContractExecuteTransaction,
     ContractFunctionParameters,
+    FileAppendTransaction,
     FileCreateTransaction,
     Query,
     TokenAssociateTransaction,
@@ -39,6 +41,7 @@ import {
     TransferTransaction,
 } from "@hashgraph/sdk";
 import Axios, { AxiosInstance } from 'axios';
+import axiosRetry from 'axios-retry';
 import { expect } from 'chai';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -46,6 +49,10 @@ import pino from 'pino';
 import shell from 'shelljs';
 
 // local resources
+import erc20Contract from './erc20Contract/ERC20Contract.json';
+import erc20PermissionsContract from './erc20PermissionsContract/ERC20Permissions.json';
+import hrtkErc20Contract from './hashRelTk/HashRelTk.json';
+import someERC20Scenarios from './SomeERC20Scenarios/SomeERC20Scenarios.json';
 import parentContract from './parentContract/Parent.json';
 import app from '../src/server';
 
@@ -65,6 +72,7 @@ const logger = testLogger.child({ name: 'rpc-acceptance-test' });
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 const useLocalNode = process.env.LOCAL_NODE || 'true';
+const supportedEnvs = ['previewnet', 'testnet', 'mainnet'];
 
 // const refs
 const legacyTransactionHex = 'f864012f83018000947e3a9eaf9bcc39e2ffa38eb30bf7a93feacbc18180827653820277a0f9fbff985d374be4a55f296915002eec11ac96f1ce2df183adf992baa9390b2fa00c1e867cc960d9c74ec2e6a662b7908ec4c8cc9f3091e886bcefbeb2290fb792';
@@ -74,6 +82,7 @@ const londonTransactionHex = '02f902e082012a80a000000000000000000000000000000000
 
 // cached entities
 let client: Client;
+// let mirrorNodeClient;
 let tokenId;
 let opPrivateKey;
 let contractId;
@@ -111,11 +120,16 @@ describe('RPC Server Integration Tests', async function () {
         const { accountInfo: primaryAccountInfo, privateKey: primaryKey } = await createEthCompatibleAccount();
         const { accountInfo: secondaryAccountInfo, privateKey: secondaryKey } = await createEthCompatibleAccount();
 
-        logger.info('Create and execute contracts');
+        this.primaryAccountInfo = primaryAccountInfo;
+        this.secondaryAccountInfo = secondaryAccountInfo;
+        this.primaryKey = primaryKey;
+        this.secondaryKey = secondaryKey;
+
+        // logger.info('Create and execute contracts');
         // 2. contract create amd execute
         // Take Parent contract used in mirror node acceptance tests since it's well use
-        await createParentContract();
-        await executeContractCall();
+        // await createParentContract();
+        // await executeContractCall();
 
         logger.info('Create token');
         // 3. Token create
@@ -126,13 +140,14 @@ describe('RPC Server Integration Tests', async function () {
         await associateAndTransferToken(primaryAccountInfo.accountId, primaryKey);
         await associateAndTransferToken(secondaryAccountInfo.accountId, secondaryKey);
 
-        logger.info('Send file close crypto transfers');
+        // logger.info('Send file close crypto transfers');
         // 5. simple crypto trasnfer to ensure file close
-        await sendFileClosingCryptoTransfer(primaryAccountInfo.accountId);
-        await sendFileClosingCryptoTransfer(secondaryAccountInfo.accountId);
+        // await sendFileClosingCryptoTransfer(primaryAccountInfo.accountId);
+        // await sendFileClosingCryptoTransfer(secondaryAccountInfo.accountId);
 
-        const mirrorNodeClient = Axios.create({
-            baseURL: 'http://localhost:5551/api/v1',
+        logger.info(`Setting up Mirror Node Client for ${process.env['MIRROR_NODE_URL']} env`);
+        this.mirrorNodeClient = Axios.create({
+            baseURL: `${process.env['MIRROR_NODE_URL']}/api/v1`,
             responseType: 'json' as const,
             headers: {
                 'Content-Type': 'application/json'
@@ -141,20 +156,32 @@ describe('RPC Server Integration Tests', async function () {
             timeout: 5 * 1000
         });
 
+        // allow retries given mirror node waits for consensus, record stream serialization, export and import before parsing and exposing
+        axiosRetry(this.mirrorNodeClient, {
+            retries: 5,
+            retryDelay: (retryCount) => {
+                logger.info(`Retry delay ${retryCount * 1000} s`);
+                return retryCount * 1000;
+            },
+            retryCondition: (error) => {
+                // if retry condition is not specified, by default idempotent requests are retried
+                return error.response.status === 400 || error.response.status === 404;
+            }
+        });
 
         // get contract details
-        const mirrorContractDetailsResponse = await callMirrorNode(mirrorNodeClient, `/contracts/${contractId}/results/${contractExecuteTimestamp}`);
-        mirrorContractDetails = mirrorContractDetailsResponse.data;
+        // const mirrorContractDetailsResponse = await callMirrorNode(this.mirrorNodeClient, `/contracts/${contractId}/results/${contractExecuteTimestamp}`);
+        // mirrorContractDetails = mirrorContractDetailsResponse.data;
 
-        // get block
-        const mirrorBlockResponse = await callMirrorNode(mirrorNodeClient, `/blocks?block.number=${mirrorContractDetails.block_number}`);
-        mirrorBlock = mirrorBlockResponse.data.blocks[0];
+        // // get block
+        // const mirrorBlockResponse = await callMirrorNode(this.mirrorNodeClient, `/blocks?block.number=${mirrorContractDetails.block_number}`);
+        // mirrorBlock = mirrorBlockResponse.data.blocks[0];
 
-        const mirrorPrimaryAccountResponse = await callMirrorNode(mirrorNodeClient, `accounts?account.id=${primaryAccountInfo.accountId}`);
-        mirrorPrimaryAccount = mirrorPrimaryAccountResponse.data.accounts[0];
+        // const mirrorPrimaryAccountResponse = await callMirrorNode(this.mirrorNodeClient, `accounts?account.id=${primaryAccountInfo.accountId}`);
+        // mirrorPrimaryAccount = mirrorPrimaryAccountResponse.data.accounts[0];
 
-        const mirrorSecondaryAccountResponse = await callMirrorNode(mirrorNodeClient, `accounts?account.id=${secondaryAccountInfo.accountId}`);
-        mirrorSecondaryAccount = mirrorSecondaryAccountResponse.data.accounts[0];
+        // const mirrorSecondaryAccountResponse = await callMirrorNode(this.mirrorNodeClient, `accounts?account.id=${secondaryAccountInfo.accountId}`);
+        // mirrorSecondaryAccount = mirrorSecondaryAccountResponse.data.accounts[0];
 
         // start relay
         logger.info(`Start relay on port ${process.env.SERVER_PORT}`);
@@ -320,6 +347,131 @@ describe('RPC Server Integration Tests', async function () {
         callUnsupportedRelayMethod(this.relayClient, 'eth_protocolVersion', []);
     });
 
+    it('erc20 test', async function () {
+        const erc20ContractId = await createHrtkContract(erc20Contract);
+
+        // approve
+        const approveTransaction = new ContractExecuteTransaction()
+            .setContractId(erc20ContractId)
+            .setGas(1500000)
+            .setFunction(
+                "approve",
+                new ContractFunctionParameters()
+                    .addAddress(tokenId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(10)
+            );
+        await executeHrtkContractCall('approve', approveTransaction, erc20ContractId, this.mirrorNodeClient);
+
+        // transferFrom
+        const allowanceTransaction = new ContractExecuteTransaction()
+            .setContractId(erc20ContractId)
+            .setGas(1500000)
+            .setFunction(
+                "transferFrom",
+                new ContractFunctionParameters()
+                    .addAddress(tokenId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addAddress(this.secondaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(8)
+            );
+        await executeHrtkContractCall('transferFromowance', allowanceTransaction, erc20ContractId, this.mirrorNodeClient);
+    });
+
+    it('erc20 hrtkContract test', async function () {
+        const hrtkContractId = await createHrtkContract(hrtkErc20Contract);
+
+        // approve
+        const approveTransaction = new ContractExecuteTransaction()
+            .setContractId(hrtkContractId)
+            .setGas(75000)
+            .setFunction(
+                "approve",
+                new ContractFunctionParameters()
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(10)
+            );
+        await executeHrtkContractCall('approve', approveTransaction, hrtkContractId, this.mirrorNodeClient);
+
+        // allow
+        const allowanceTransaction = new ContractExecuteTransaction()
+            .setContractId(hrtkContractId)
+            .setGas(75000)
+            .setFunction(
+                "allowance",
+                new ContractFunctionParameters()
+                    .addAddress(client.operatorAccountId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+            );
+        await executeHrtkContractCall('allowance', allowanceTransaction, hrtkContractId, this.mirrorNodeClient);
+    });
+
+    it('erc20 permissions test', async function () {
+        const erc20PermsContractId = await createHrtkContract(erc20PermissionsContract);
+
+        // approve
+        logger.debug(`Issue approval for account ${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) to send 10 tokens of token ${tokenId} (${tokenId.toSolidityAddress()})`);
+        const approveTransaction = new ContractExecuteTransaction()
+            .setContractId(erc20PermsContractId)
+            .setGas(1250000)
+            .setFunction(
+                "giveApproval",
+                new ContractFunctionParameters()
+                    .addAddress(tokenId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(10)
+            );
+        await executeHrtkContractCall('giveApproval', approveTransaction, erc20PermsContractId, this.mirrorNodeClient);
+
+        // doTransferFrom
+        logger.debug(`${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) issues doTransferFrom account ${client.operatorAccountId} (${client.operatorAccountId.toSolidityAddress()}) to account ${this.secondaryAccountInfo.accountId} (${this.secondaryAccountInfo.accountId.toSolidityAddress()})`);
+        const allowanceTransaction = new ContractExecuteTransaction()
+            .setContractId(erc20PermsContractId)
+            .setGas(1250000)
+            .setFunction(
+                "doTransferFrom",
+                new ContractFunctionParameters()
+                    .addAddress(tokenId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addAddress(this.secondaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(8)
+            );
+        await executeHrtkContractCall('doTransferFrom', allowanceTransaction, erc20PermsContractId, this.mirrorNodeClient);
+    });
+
+    it('erc20 SomeERC20Scenarios test', async function () {
+        const someERC20ScenariosContractId = await createHrtkContract(someERC20Scenarios);
+
+        // approve
+        logger.debug(`Issue approval for account ${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) to send 10 tokens of token ${tokenId} (${tokenId.toSolidityAddress()})`);
+        const approveTransaction = new ContractExecuteTransaction()
+            .setContractId(someERC20ScenariosContractId)
+            .setGas(1250000)
+            .setFunction(
+                "doSpecificApproval",
+                new ContractFunctionParameters()
+                    .addAddress(tokenId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(10)
+            );
+        await executeHrtkContractCall('doSpecificApproval', approveTransaction, someERC20ScenariosContractId, this.mirrorNodeClient);
+
+        // doTransferFrom
+        logger.debug(`${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) issues doTransferFrom account ${client.operatorAccountId} (${client.operatorAccountId.toSolidityAddress()}) to account ${this.secondaryAccountInfo.accountId} (${this.secondaryAccountInfo.accountId.toSolidityAddress()})`);
+        const allowanceTransaction = new ContractExecuteTransaction()
+            .setContractId(someERC20ScenariosContractId)
+            .setGas(1250000)
+            .setFunction(
+                "doTransferFrom",
+                new ContractFunctionParameters()
+                    .addAddress(tokenId.toSolidityAddress())
+                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
+                    .addAddress(this.secondaryAccountInfo.accountId.toSolidityAddress())
+                    .addUint256(8)
+            );
+        await executeHrtkContractCall('doTransferFrom', allowanceTransaction, someERC20ScenariosContractId, this.mirrorNodeClient);
+    });
+
     const callMirrorNode = (mirrorNodeClient: AxiosInstance, path: string) => {
         logger.debug(`[GET] mirrornode ${path} endpoint`);
         return mirrorNodeClient.get(path);
@@ -367,11 +519,15 @@ describe('RPC Server Integration Tests', async function () {
 
     const setupClient = () => {
         opPrivateKey = PrivateKey.fromString(process.env.OPERATOR_KEY_MAIN);
-        client = Client
-            .forNetwork({
-                '127.0.0.1:50211': '0.0.3'
-            })
-            .setOperator(AccountId.fromString(process.env.OPERATOR_ID_MAIN), opPrivateKey);
+        const hederaNetwork: string = process.env.HEDERA_NETWORK || '{}';
+
+        if (hederaNetwork.toLowerCase() in supportedEnvs) {
+            client = Client.forName(hederaNetwork);
+        } else {
+            client = Client.forNetwork(JSON.parse(hederaNetwork));
+        }
+
+        client.setOperator(AccountId.fromString(process.env.OPERATOR_ID_MAIN), opPrivateKey);
     };
 
     const createEthCompatibleAccount = async () => {
@@ -465,6 +621,72 @@ describe('RPC Server Integration Tests', async function () {
         logger.info(`Balances of the new account: ${balance.toString()}`);
     };
 
+    const createHrtkContract = async (contractObject) => {
+        const contractByteCode = (contractObject.bytecode.replace('0x', ''));
+
+        // const contractTransactionResponse = await new ContractCreateFlow()
+        //     .setBytecode(contractByteCode)
+        //     .setGas(7000000)
+        //     .setConstructorParameters(
+        //         new ContractFunctionParameters()
+        //     )
+        //     .execute(client);
+        // const receipt = await contractTransactionResponse.getReceipt(client);
+        // logger.info(`ContractCreateFlow receipt: ${JSON.stringify(receipt)}`);
+
+        let fileReceipt;
+
+        fileReceipt = await executeAndGetTransactionReceipt(new FileCreateTransaction()
+            .setKeys([client.operatorPublicKey])
+            .setContents(contractByteCode.slice(0, Math.min(contractByteCode.length, 2048))));
+
+        const fileId = fileReceipt.fileId;
+        logger.info(`contract bytecode file: ${fileId.toString()}`);
+
+        if (contractByteCode.length > 2048) {
+            logger.info(`contract file append for ${contractByteCode.length - 2048} remaining characters`);
+            fileReceipt = await executeAndGetTransactionReceipt(new FileAppendTransaction()
+                .setContents(contractByteCode.slice(2048))
+                .setFileId(fileId));
+        }
+
+        // Create the contract
+        const contractReceipt = await executeAndGetTransactionReceipt(new ContractCreateTransaction()
+            .setConstructorParameters(
+                new ContractFunctionParameters()
+            )
+            .setGas(7000000)
+            .setBytecodeFileId(fileId)
+            .setAdminKey(client.operatorPublicKey));
+
+        // Fetch the receipt for the transaction that created the contract
+
+        // The contract ID is located on the transaction receipt
+        const hrtkContractId = contractReceipt.contractId;
+
+        logger.info(`new contract ID: ${hrtkContractId.toString()}`);
+        return hrtkContractId;
+    };
+
+    const executeHrtkContractCall = async (name, transaction: Transaction, hrtkContractId, mirrorNodeClient) => {
+        logger.info(`Execute contracts ${hrtkContractId}'s ${name} method`);
+        const contractExecTransactionResponse = await executeTransaction(transaction);
+
+        const resp = await getRecordResponseDetails(contractExecTransactionResponse);
+        logger.info(`resp: ${JSON.stringify(resp)}`);
+
+
+        // get contract details
+        const mirrorContractDetailsResponse = await callMirrorNode(mirrorNodeClient, `/contracts/${hrtkContractId}/results/${resp.executedTimestamp}`);
+        const mirrorContractDetails = mirrorContractDetailsResponse.data;
+        logger.info(`mirrorContractDetails: ${JSON.stringify(mirrorContractDetails)}`);
+
+        // get block
+        const mirrorBlockResponse = await callMirrorNode(mirrorNodeClient, `/blocks?block.number=${mirrorContractDetails.block_number}`);
+        const mirrorBlock = mirrorBlockResponse.data.blocks[0];
+        logger.info(`mirrorBlock: ${JSON.stringify(mirrorBlock)}`);
+    };
+
     const createParentContract = async () => {
         const contractByteCode = (parentContract.deployedBytecode.replace('0x', ''));
 
@@ -541,7 +763,7 @@ describe('RPC Server Integration Tests', async function () {
             return resp.getReceipt(client);
         }
         catch (e) {
-            logger.error(e, 
+            logger.error(e,
                 `Error retrieving receipt for ${resp === undefined ? transaction.constructor.name : resp.transactionId.toString()} transaction`);
         }
     };
