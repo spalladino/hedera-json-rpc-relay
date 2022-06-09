@@ -50,9 +50,6 @@ import shell from 'shelljs';
 
 // local resources
 import erc20Contract from './erc20Contract/ERC20Contract.json';
-import erc20PermissionsContract from './erc20PermissionsContract/ERC20Permissions.json';
-import hrtkErc20Contract from './hashRelTk/HashRelTk.json';
-import someERC20Scenarios from './SomeERC20Scenarios/SomeERC20Scenarios.json';
 import parentContract from './parentContract/Parent.json';
 import app from '../src/server';
 
@@ -125,11 +122,11 @@ describe('RPC Server Integration Tests', async function () {
         this.primaryKey = primaryKey;
         this.secondaryKey = secondaryKey;
 
-        // logger.info('Create and execute contracts');
+        logger.info('Create and execute contracts');
         // 2. contract create amd execute
         // Take Parent contract used in mirror node acceptance tests since it's well use
-        // await createParentContract();
-        // await executeContractCall();
+        await createParentContract();
+        await executeContractCall();
 
         logger.info('Create token');
         // 3. Token create
@@ -140,10 +137,10 @@ describe('RPC Server Integration Tests', async function () {
         await associateAndTransferToken(primaryAccountInfo.accountId, primaryKey);
         await associateAndTransferToken(secondaryAccountInfo.accountId, secondaryKey);
 
-        // logger.info('Send file close crypto transfers');
+        logger.info('Send file close crypto transfers');
         // 5. simple crypto trasnfer to ensure file close
-        // await sendFileClosingCryptoTransfer(primaryAccountInfo.accountId);
-        // await sendFileClosingCryptoTransfer(secondaryAccountInfo.accountId);
+        await sendFileClosingCryptoTransfer(primaryAccountInfo.accountId);
+        await sendFileClosingCryptoTransfer(secondaryAccountInfo.accountId);
 
         logger.info(`Setting up Mirror Node Client for ${process.env['MIRROR_NODE_URL']} env`);
         this.mirrorNodeClient = Axios.create({
@@ -170,18 +167,18 @@ describe('RPC Server Integration Tests', async function () {
         });
 
         // get contract details
-        // const mirrorContractDetailsResponse = await callMirrorNode(this.mirrorNodeClient, `/contracts/${contractId}/results/${contractExecuteTimestamp}`);
-        // mirrorContractDetails = mirrorContractDetailsResponse.data;
+        const mirrorContractDetailsResponse = await callMirrorNode(this.mirrorNodeClient, `/contracts/${contractId}/results/${contractExecuteTimestamp}`);
+        mirrorContractDetails = mirrorContractDetailsResponse.data;
 
         // // get block
-        // const mirrorBlockResponse = await callMirrorNode(this.mirrorNodeClient, `/blocks?block.number=${mirrorContractDetails.block_number}`);
-        // mirrorBlock = mirrorBlockResponse.data.blocks[0];
+        const mirrorBlockResponse = await callMirrorNode(this.mirrorNodeClient, `/blocks?block.number=${mirrorContractDetails.block_number}`);
+        mirrorBlock = mirrorBlockResponse.data.blocks[0];
 
-        // const mirrorPrimaryAccountResponse = await callMirrorNode(this.mirrorNodeClient, `accounts?account.id=${primaryAccountInfo.accountId}`);
-        // mirrorPrimaryAccount = mirrorPrimaryAccountResponse.data.accounts[0];
+        const mirrorPrimaryAccountResponse = await callMirrorNode(this.mirrorNodeClient, `accounts?account.id=${primaryAccountInfo.accountId}`);
+        mirrorPrimaryAccount = mirrorPrimaryAccountResponse.data.accounts[0];
 
-        // const mirrorSecondaryAccountResponse = await callMirrorNode(this.mirrorNodeClient, `accounts?account.id=${secondaryAccountInfo.accountId}`);
-        // mirrorSecondaryAccount = mirrorSecondaryAccountResponse.data.accounts[0];
+        const mirrorSecondaryAccountResponse = await callMirrorNode(this.mirrorNodeClient, `accounts?account.id=${secondaryAccountInfo.accountId}`);
+        mirrorSecondaryAccount = mirrorSecondaryAccountResponse.data.accounts[0];
 
         // start relay
         logger.info(`Start relay on port ${process.env.SERVER_PORT}`);
@@ -348,7 +345,7 @@ describe('RPC Server Integration Tests', async function () {
     });
 
     it('erc20 test', async function () {
-        const erc20ContractId = await createHrtkContract(erc20Contract);
+        const erc20ContractId = await createContract(erc20Contract, 7000000);
 
         // approve
         const approveTransaction = new ContractExecuteTransaction()
@@ -361,7 +358,7 @@ describe('RPC Server Integration Tests', async function () {
                     .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
                     .addUint256(10)
             );
-        await executeHrtkContractCall('approve', approveTransaction, erc20ContractId, this.mirrorNodeClient);
+        await executeAndMirrorValidateContractCall('approve', approveTransaction, erc20ContractId, this.mirrorNodeClient);
 
         // transferFrom
         const allowanceTransaction = new ContractExecuteTransaction()
@@ -375,101 +372,7 @@ describe('RPC Server Integration Tests', async function () {
                     .addAddress(this.secondaryAccountInfo.accountId.toSolidityAddress())
                     .addUint256(8)
             );
-        await executeHrtkContractCall('transferFromowance', allowanceTransaction, erc20ContractId, this.mirrorNodeClient);
-    });
-
-    it('erc20 hrtkContract test', async function () {
-        const hrtkContractId = await createHrtkContract(hrtkErc20Contract);
-
-        // approve
-        const approveTransaction = new ContractExecuteTransaction()
-            .setContractId(hrtkContractId)
-            .setGas(75000)
-            .setFunction(
-                "approve",
-                new ContractFunctionParameters()
-                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
-                    .addUint256(10)
-            );
-        await executeHrtkContractCall('approve', approveTransaction, hrtkContractId, this.mirrorNodeClient);
-
-        // allow
-        const allowanceTransaction = new ContractExecuteTransaction()
-            .setContractId(hrtkContractId)
-            .setGas(75000)
-            .setFunction(
-                "allowance",
-                new ContractFunctionParameters()
-                    .addAddress(client.operatorAccountId.toSolidityAddress())
-                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
-            );
-        await executeHrtkContractCall('allowance', allowanceTransaction, hrtkContractId, this.mirrorNodeClient);
-    });
-
-    it('erc20 permissions test', async function () {
-        const erc20PermsContractId = await createHrtkContract(erc20PermissionsContract);
-
-        // approve
-        logger.debug(`Issue approval for account ${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) to send 10 tokens of token ${tokenId} (${tokenId.toSolidityAddress()})`);
-        const approveTransaction = new ContractExecuteTransaction()
-            .setContractId(erc20PermsContractId)
-            .setGas(1250000)
-            .setFunction(
-                "giveApproval",
-                new ContractFunctionParameters()
-                    .addAddress(tokenId.toSolidityAddress())
-                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
-                    .addUint256(10)
-            );
-        await executeHrtkContractCall('giveApproval', approveTransaction, erc20PermsContractId, this.mirrorNodeClient);
-
-        // doTransferFrom
-        logger.debug(`${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) issues doTransferFrom account ${client.operatorAccountId} (${client.operatorAccountId.toSolidityAddress()}) to account ${this.secondaryAccountInfo.accountId} (${this.secondaryAccountInfo.accountId.toSolidityAddress()})`);
-        const allowanceTransaction = new ContractExecuteTransaction()
-            .setContractId(erc20PermsContractId)
-            .setGas(1250000)
-            .setFunction(
-                "doTransferFrom",
-                new ContractFunctionParameters()
-                    .addAddress(tokenId.toSolidityAddress())
-                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
-                    .addAddress(this.secondaryAccountInfo.accountId.toSolidityAddress())
-                    .addUint256(8)
-            );
-        await executeHrtkContractCall('doTransferFrom', allowanceTransaction, erc20PermsContractId, this.mirrorNodeClient);
-    });
-
-    it('erc20 SomeERC20Scenarios test', async function () {
-        const someERC20ScenariosContractId = await createHrtkContract(someERC20Scenarios);
-
-        // approve
-        logger.debug(`Issue approval for account ${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) to send 10 tokens of token ${tokenId} (${tokenId.toSolidityAddress()})`);
-        const approveTransaction = new ContractExecuteTransaction()
-            .setContractId(someERC20ScenariosContractId)
-            .setGas(1250000)
-            .setFunction(
-                "doSpecificApproval",
-                new ContractFunctionParameters()
-                    .addAddress(tokenId.toSolidityAddress())
-                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
-                    .addUint256(10)
-            );
-        await executeHrtkContractCall('doSpecificApproval', approveTransaction, someERC20ScenariosContractId, this.mirrorNodeClient);
-
-        // doTransferFrom
-        logger.debug(`${this.primaryAccountInfo.accountId} (${this.primaryAccountInfo.accountId.toSolidityAddress()}) issues doTransferFrom account ${client.operatorAccountId} (${client.operatorAccountId.toSolidityAddress()}) to account ${this.secondaryAccountInfo.accountId} (${this.secondaryAccountInfo.accountId.toSolidityAddress()})`);
-        const allowanceTransaction = new ContractExecuteTransaction()
-            .setContractId(someERC20ScenariosContractId)
-            .setGas(1250000)
-            .setFunction(
-                "doTransferFrom",
-                new ContractFunctionParameters()
-                    .addAddress(tokenId.toSolidityAddress())
-                    .addAddress(this.primaryAccountInfo.accountId.toSolidityAddress())
-                    .addAddress(this.secondaryAccountInfo.accountId.toSolidityAddress())
-                    .addUint256(8)
-            );
-        await executeHrtkContractCall('doTransferFrom', allowanceTransaction, someERC20ScenariosContractId, this.mirrorNodeClient);
+        await executeAndMirrorValidateContractCall('transferFromowance', allowanceTransaction, erc20ContractId, this.mirrorNodeClient);
     });
 
     const callMirrorNode = (mirrorNodeClient: AxiosInstance, path: string) => {
@@ -621,18 +524,8 @@ describe('RPC Server Integration Tests', async function () {
         logger.info(`Balances of the new account: ${balance.toString()}`);
     };
 
-    const createHrtkContract = async (contractObject) => {
+    const createContract = async (contractObject, gas) => {
         const contractByteCode = (contractObject.bytecode.replace('0x', ''));
-
-        // const contractTransactionResponse = await new ContractCreateFlow()
-        //     .setBytecode(contractByteCode)
-        //     .setGas(7000000)
-        //     .setConstructorParameters(
-        //         new ContractFunctionParameters()
-        //     )
-        //     .execute(client);
-        // const receipt = await contractTransactionResponse.getReceipt(client);
-        // logger.info(`ContractCreateFlow receipt: ${JSON.stringify(receipt)}`);
 
         let fileReceipt;
 
@@ -655,20 +548,17 @@ describe('RPC Server Integration Tests', async function () {
             .setConstructorParameters(
                 new ContractFunctionParameters()
             )
-            .setGas(7000000)
+            .setGas(gas)
             .setBytecodeFileId(fileId)
             .setAdminKey(client.operatorPublicKey));
 
-        // Fetch the receipt for the transaction that created the contract
+        const newContractId = contractReceipt.contractId;
 
-        // The contract ID is located on the transaction receipt
-        const hrtkContractId = contractReceipt.contractId;
-
-        logger.info(`new contract ID: ${hrtkContractId.toString()}`);
-        return hrtkContractId;
+        logger.info(`new contract ID: ${newContractId.toString()}`);
+        return newContractId;
     };
 
-    const executeHrtkContractCall = async (name, transaction: Transaction, hrtkContractId, mirrorNodeClient) => {
+    const executeAndMirrorValidateContractCall = async (name, transaction: Transaction, hrtkContractId, mirrorNodeClient) => {
         logger.info(`Execute contracts ${hrtkContractId}'s ${name} method`);
         const contractExecTransactionResponse = await executeTransaction(transaction);
 
